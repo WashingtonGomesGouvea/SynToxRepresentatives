@@ -102,6 +102,13 @@ def compute_coleta_status(
 
 def aggregate_volumes(df_gatherings_active: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
     g = df_gatherings_active.copy()
+    
+    # Garantir que createdAt seja datetime antes de usar .dt accessor
+    if "createdAt" in g.columns:
+        g["createdAt"] = pd.to_datetime(g["createdAt"], errors="coerce")
+        # Remover linhas onde a conversão falhou (valores inválidos)
+        g = g.dropna(subset=["createdAt"])
+    
     g["month"] = g["createdAt"].dt.to_period("M")
     g["week"] = g["createdAt"].dt.to_period("W")
     
@@ -274,10 +281,17 @@ def compute_new_accreditations(
     from datetime import timedelta
     date_limit = current_date - timedelta(days=months_back * 30)
     
+    # Garantir que createdAt seja datetime antes de usar operações de data
+    df_labs_clean = df_labs_status.copy()
+    if "createdAt" in df_labs_clean.columns:
+        df_labs_clean["createdAt"] = pd.to_datetime(df_labs_clean["createdAt"], errors="coerce")
+        # Remover linhas onde a conversão falhou (valores inválidos)
+        df_labs_clean = df_labs_clean.dropna(subset=["createdAt"])
+    
     # Filtrar labs credenciados recentemente
-    new_labs = df_labs_status[
-        (df_labs_status['is_credenciado'] == True) &
-        (df_labs_status['createdAt'] >= date_limit)
+    new_labs = df_labs_clean[
+        (df_labs_clean['is_credenciado'] == True) &
+        (df_labs_clean['createdAt'] >= date_limit)
     ].copy()
     
     if new_labs.empty:

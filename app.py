@@ -1615,7 +1615,11 @@ def main():
 
     # Sidebar: filtros globais simplificados
     st.sidebar.header("🔍 Filtros Simples")
-    year_options = [int(y) for y in sorted(df_gatherings["createdAt"].dt.year.dropna().unique())] if "createdAt" in df_gatherings.columns else [DEFAULT_YEAR]
+    # Verificar se createdAt é datetime e extrair anos
+    if "createdAt" in df_gatherings.columns and pd.api.types.is_datetime64_any_dtype(df_gatherings["createdAt"]):
+        year_options = [int(y) for y in sorted(df_gatherings["createdAt"].dt.year.dropna().unique())]
+    else:
+        year_options = [DEFAULT_YEAR]
     year = st.sidebar.selectbox("Ano", options=year_options, index=year_options.index(DEFAULT_YEAR) if DEFAULT_YEAR in year_options else 0)
     
     activity_window = st.sidebar.slider("Dias para Atividade", 7, 60, DEFAULT_ACTIVITY_WINDOW_DAYS, help="Define quando um lab é considerado ativo")

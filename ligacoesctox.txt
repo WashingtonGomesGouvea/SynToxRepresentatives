@@ -1,0 +1,81 @@
+
+ACOMPANHAMENTO DE COLETAS — LIGAÇÕES DE TABELAS E PROMPT STREAMLIT
+=================================================================
+
+PARTE 1) LIGAÇÕES DAS TABELAS E REGRAS DE NEGÓCIO
+-------------------------------------------------
+
+Tabelas recebidas
+- representatives
+- laboratories
+- gatherings
+- chainofcustodies
+
+Como elas se conectam (chaves)
+- representatives._id  (ObjectId)
+    └─> laboratories._representative (ObjectId)   [1 representante : N laboratórios]
+
+- laboratories._id (ObjectId)
+    └─> gatherings._laboratory (ObjectId)         [1 laboratório : N coletas (gatherings)]
+
+- chainofcustodies._id (ObjectId)
+    └─< gatherings._chainOfCustody (ObjectId)     [1 cadeia de custódia : 0..1 gathering] (na prática, 1:1)
+
+Diagrama ASCII (estrela simplificada para análise)
+representatives (rep_id)
+        │ 1
+        └───────────────┐
+                        │ *
+                laboratories (lab_id, status_credenciamento, rep_tipo)
+                        │ 1
+                        └───────────────┐
+                                        │ *
+                             gatherings (coletas ativas, createdAt, _chainOfCustody)
+                                        │ *
+                                        └──────── chainofcustodies (atributos da amostra)
+
+Campos relevantes (por tabela)
+- representatives: _id, name, cpf/cnpj, createdAt/updatedAt
+- laboratories: _id, _representative, active, approved, exclusionDate, fantasyName, cnpj
+- gatherings: _id, _laboratory, _chainOfCustody, active (bool), createdAt, test (bool), disabledInReport (bool)
+- chainofcustodies: _id, createdAt, sample.type, sample.color, sample.hairOrigin
+
+Regras de negócio consolidadas
+1) Coletas ativas
+   - Considere SOMENTE registros com gatherings.active = true.
+   - (Opcional) Você pode adicionar toggles para excluir test = true e disabledInReport = true.
+
+2) Status de Credenciamento (visão de cadastro do laboratório)
+   - Credenciado  = laboratories.active = true AND laboratories.approved = true AND (exclusionDate nulo OU no futuro)
+   - Descredenciado = qualquer outro caso (inclui active=false, approved=false, ou exclusionDate no passado)
+
+3) Status de Coleta (visão de produção, janela 15 dias — configurável)
+   - Para cada laboratório, calcule a data da última coleta ATIVA: MAX(gatherings.createdAt)
+   - Ativo em Coletas    = existe coleta ativa nos últimos 15 dias (NOW - última_coleta <= 15d)
+   - Inativo em Coletas  = não coletou há 15+ dias
+   - A janela deve ser ajustável por slider (ex.: 7–60 dias, default 15).
+
+4) Tipo de Representante (Interno x Externo) — SEM categoria “Outros”
+   - Interno se o nome (case-insensitive, trims e tolera hífen/en dash) começar por QUALQUER UM:
+       "INT-", "INT -", "CAEPTOX -", "CAEPTOX-", "CAEPTOX –", "CAEPTOX–", "TLMK -", "TLMK", "TMLK -"
+   - Externo caso contrário (inclui "EXT -" e nomes sem prefixo).
+   - Se não houver representante associado, trate como Externo por padrão.
+
+5) Volume de amostras / por mês
+   - Contagem de gatherings ATIVOS ao longo do tempo (base: gatherings.createdAt).
+   - Agregue por Ano-Mês para o gráfico.
+
+Métricas / visões recomendadas
+- KPIs (após filtros):
+  • Coletas Ativas (quantidade)  
+  • Labs Credenciados  
+  • Labs Descredenciados  
+  • Labs Ativos em Coletas (últimos X dias, slider)  
+- Gráfico de linha: Volume mensal de coletas ativas (Ano-Mês).
+- Ranking: Laboratório x Representante x Tipo (Interno/Externo) com Coletas, Última Coleta, Status de Credenciamento e Status de Coleta (janela).
+- Filtros: Tipo de representante (Interno/Externo), Representante específico, Janela X dias, (opcional) faixa de datas.
+
+Observações importantes
+- Datas do Mongo vêm como ISO em UTC (campos com “$date”). Parseie como timezone-aware para evitar deslocamentos.
+- A contagem por amostra pode ser enriquecida via join na chainofcustodies (ex.: por sample.type).
+- Mantenha separadas as visões: “Credenciamento” (cadastro) e “Atividade de Coleta” (produção) para evitar interpretações equivocadas.

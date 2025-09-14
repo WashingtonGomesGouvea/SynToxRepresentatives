@@ -72,39 +72,76 @@ def load_csvs() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """
     Carrega CSVs com fallback inteligente:
       1) Tenta no DATA_DIR atual (pasta local)
-      2) Se não existir, tenta SharePoint via Graph (se credenciais presentes)
+      2) Se não existir ou estiver vazio, tenta SharePoint via Graph
+      3) Se falhar, tenta pastas locais alternativas
     """
     reps_path = os.path.join(DATA_DIR, "representatives.csv")
     labs_path = os.path.join(DATA_DIR, "laboratories.csv")
     gath_path = os.path.join(DATA_DIR, "gatherings.csv")
 
-    # Verificar se arquivos existem localmente
-    local_files_exist = all(os.path.isfile(p) for p in [reps_path, labs_path, gath_path])
+    # Verificar se arquivos existem localmente e não estão vazios
+    def _files_valid(paths):
+        return all(os.path.isfile(p) and os.path.getsize(p) > 0 for p in paths)
     
-    if local_files_exist:
-        # Ler arquivos locais
-        df_reps = pd.read_csv(reps_path, low_memory=False)
-        df_labs = pd.read_csv(labs_path, low_memory=False)
-        df_gatherings = pd.read_csv(gath_path, low_memory=False)
-        return df_reps, df_labs, df_gatherings
+    local_files_valid = _files_valid([reps_path, labs_path, gath_path])
     
-    # Tentar SharePoint se arquivos locais não existirem
+    if local_files_valid:
+        try:
+            # Ler arquivos locais
+            df_reps = pd.read_csv(reps_path, low_memory=False)
+            df_labs = pd.read_csv(labs_path, low_memory=False)
+            df_gatherings = pd.read_csv(gath_path, low_memory=False)
+            print(f"📂 Dados carregados localmente de: {DATA_DIR}")
+            return df_reps, df_labs, df_gatherings
+        except Exception as e:
+            print(f"⚠️ Erro ao ler arquivos locais: {e}")
+    
+    # Tentar SharePoint se arquivos locais não existirem ou falharam
     sp = _maybe_create_sp_connector()
     if sp is not None:
         try:
             # Usar valor padrão para SP_BASE_PATH
             sp_base = "Data Analysis/ToxRepresentatives"
+            print(f"☁️ Tentando carregar dados do SharePoint: {sp_base}")
             df_reps = sp.read_csv(f"{sp_base}/representatives.csv")
             df_labs = sp.read_csv(f"{sp_base}/laboratories.csv")
             df_gatherings = sp.read_csv(f"{sp_base}/gatherings.csv")
+            print("✅ Dados carregados do SharePoint com sucesso!")
             return df_reps, df_labs, df_gatherings
         except Exception as e:
-            print(f"Erro ao ler do SharePoint: {e}")
+            print(f"❌ Erro ao ler do SharePoint: {e}")
+    
+    # Tentar pastas alternativas como último recurso
+    alternative_paths = [
+        ".",  # Pasta atual
+        "data",  # Pasta data
+        "csvs",  # Pasta csvs
+    ]
+    
+    for alt_dir in alternative_paths:
+        alt_reps = os.path.join(alt_dir, "representatives.csv")
+        alt_labs = os.path.join(alt_dir, "laboratories.csv")
+        alt_gath = os.path.join(alt_dir, "gatherings.csv")
+        
+        if _files_valid([alt_reps, alt_labs, alt_gath]):
+            try:
+                df_reps = pd.read_csv(alt_reps, low_memory=False)
+                df_labs = pd.read_csv(alt_labs, low_memory=False)
+                df_gatherings = pd.read_csv(alt_gath, low_memory=False)
+                print(f"📂 Dados carregados de pasta alternativa: {alt_dir}")
+                return df_reps, df_labs, df_gatherings
+            except Exception as e:
+                print(f"⚠️ Erro ao ler de {alt_dir}: {e}")
+                continue
     
     # Se chegou aqui, nenhum caminho funcionou
     raise FileNotFoundError(
-        f"Arquivos CSV não encontrados em {DATA_DIR} nem no SharePoint. "
-        "Execute: python sync_data.py --from-year 2025 --upload"
+        f"❌ Arquivos CSV não encontrados em:\n"
+        f"  - {DATA_DIR}\n"
+        f"  - SharePoint (credenciais: {'✅' if sp else '❌'})\n"
+        f"  - Pastas alternativas: {alternative_paths}\n\n"
+        f"💡 Para gerar os arquivos, execute:\n"
+        f"  python sync_data.py --from-year 2025 --upload"
     )
 
     # Conversão de datas considerando timezone do banco (UTC-3)

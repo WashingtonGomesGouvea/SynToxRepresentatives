@@ -9,6 +9,11 @@ from typing import Dict, List, Tuple
 
 from config import get_current_datetime, DEFAULT_YEAR, DEFAULT_ACTIVITY_WINDOW_DAYS
 from data_loader import load_csvs, enrich_labs_with_reps, merge_gatherings_with_labs
+
+
+def _is_datetime_column(df: pd.DataFrame, column: str) -> bool:
+    """Verifica se uma coluna é do tipo datetime"""
+    return column in df.columns and pd.api.types.is_datetime64_any_dtype(df[column])
 from analytics import (
     filter_active_gatherings,
     compute_credenciamento,
@@ -103,7 +108,10 @@ def detect_lab_drops(df_gatherings_active: pd.DataFrame, rep_name: str, target_m
     
     # Volumes mensais por lab
     rep_gatherings_copy = rep_gatherings.copy()
-    rep_gatherings_copy['month'] = rep_gatherings_copy['createdAt'].dt.to_period('M')
+    if _is_datetime_column(rep_gatherings_copy, 'createdAt'):
+        rep_gatherings_copy['month'] = rep_gatherings_copy['createdAt'].dt.to_period('M')
+    else:
+        rep_gatherings_copy['month'] = None
     lab_monthly = rep_gatherings_copy.groupby(['_laboratory', 'month']).size().reset_index(name='Volume')
     lab_monthly = lab_monthly.sort_values(['_laboratory', 'month'])
     
@@ -211,7 +219,10 @@ def create_rep_charts(rep_name: str, df_gatherings_active: pd.DataFrame, df_labs
     
     if not rep_gatherings.empty:
         # 1. Gráfico de volume mensal
-        rep_gatherings['month'] = rep_gatherings['createdAt'].dt.to_period('M')
+        if _is_datetime_column(rep_gatherings, 'createdAt'):
+            rep_gatherings['month'] = rep_gatherings['createdAt'].dt.to_period('M')
+        else:
+            rep_gatherings['month'] = None
         monthly_volume = rep_gatherings.groupby('month').size().reset_index(name='Volume')
         monthly_volume['month'] = monthly_volume['month'].astype(str)
         
@@ -280,7 +291,10 @@ def create_rep_charts(rep_name: str, df_gatherings_active: pd.DataFrame, df_labs
         charts['status_pie'] = fig_status
         
         # 4. Gráfico de tendência semanal
-        rep_gatherings['week'] = rep_gatherings['createdAt'].dt.to_period('W')
+        if _is_datetime_column(rep_gatherings, 'createdAt'):
+            rep_gatherings['week'] = rep_gatherings['createdAt'].dt.to_period('W')
+        else:
+            rep_gatherings['week'] = None
         weekly_volume = rep_gatherings.groupby('week').size().reset_index(name='Volume')
         weekly_volume['week'] = weekly_volume['week'].astype(str)
         
@@ -1347,7 +1361,10 @@ def rep_individual_dashboard(rep_name: str, df_labs_status: pd.DataFrame, df_gat
     # Quedas em labs
     st.subheader("⚠️ Laboratórios com Quedas Bruscas")
     # Seleção de mês (padrão: mês atual)
-    available_months = sorted(df_gatherings_active['createdAt'].dt.to_period('M').astype(str).unique()) if not df_gatherings_active.empty else []
+    if not df_gatherings_active.empty and _is_datetime_column(df_gatherings_active, 'createdAt'):
+        available_months = sorted(df_gatherings_active['createdAt'].dt.to_period('M').astype(str).unique())
+    else:
+        available_months = []
     default_index = len(available_months) - 1 if available_months else 0
     selected_month = st.selectbox("Mês", options=available_months, index=default_index) if available_months else None
     original_drops = detect_lab_drops(df_gatherings_active, rep_name, target_month=selected_month)
@@ -1616,7 +1633,7 @@ def main():
     # Sidebar: filtros globais simplificados
     st.sidebar.header("🔍 Filtros Simples")
     # Verificar se createdAt é datetime e extrair anos
-    if "createdAt" in df_gatherings.columns and pd.api.types.is_datetime64_any_dtype(df_gatherings["createdAt"]):
+    if _is_datetime_column(df_gatherings, "createdAt"):
         year_options = [int(y) for y in sorted(df_gatherings["createdAt"].dt.year.dropna().unique())]
     else:
         year_options = [DEFAULT_YEAR]
@@ -1634,7 +1651,12 @@ def main():
         st.rerun()
 
     # Filtragem
-    df_gatherings = df_gatherings[df_gatherings["createdAt"].dt.year == year]
+    # Filtrar por ano apenas se createdAt for datetime
+    if _is_datetime_column(df_gatherings, "createdAt"):
+        df_gatherings = df_gatherings[df_gatherings["createdAt"].dt.year == year]
+    else:
+        # Se não for datetime, usar todos os dados
+        pass
     df_gatherings_active = filter_active_gatherings(df_gatherings, exclude_test=False, exclude_disabled=True)
 
     if tipo_rep != "Todos":

@@ -1633,7 +1633,7 @@ def main():
     if AZURE_REQUIRE_LOGIN and AZURE_TENANT_ID and AZURE_CLIENT_ID and AZURE_CLIENT_SECRET and AZURE_REDIRECT_URI:
         try:
             import msal
-            from urllib.parse import urlencode
+            from urllib.parse import unquote
             # Estado de sessão
             if 'auth' not in st.session_state:
                 st.session_state.auth = {'account': None, 'token': None}
@@ -1650,11 +1650,15 @@ def main():
             try:
                 # Streamlit >=1.29
                 query_params = st.query_params.to_dict()
-                code = query_params.get('code')
             except Exception:
                 # Compatível com versões anteriores
-                qp = st.experimental_get_query_params()
-                code = qp.get('code', [None])[0]
+                query_params = {k: (v[0] if isinstance(v, list) and v else v) for k, v in st.experimental_get_query_params().items()}
+            # Mostrar erro de auth, se veio da Microsoft
+            if query_params.get('error'):
+                err = str(query_params.get('error'))
+                err_desc = unquote(str(query_params.get('error_description') or ''))
+                st.error(f"Erro de login Microsoft ({err}): {err_desc}")
+            code = query_params.get('code') if isinstance(query_params.get('code'), str) else None
             if not code:
                 # Exibir botão de login se não autenticado
                 if not st.session_state.auth['token']:

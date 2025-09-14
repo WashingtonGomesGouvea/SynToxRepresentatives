@@ -8,7 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, List, Tuple
 
-from config import get_current_datetime, DEFAULT_YEAR, DEFAULT_ACTIVITY_WINDOW_DAYS, DATA_DIR
+from config import get_current_datetime, DEFAULT_YEAR, DEFAULT_ACTIVITY_WINDOW_DAYS, DATA_DIR, AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_REDIRECT_URI, AZURE_REQUIRE_LOGIN
 from data_loader import load_csvs, enrich_labs_with_reps, merge_gatherings_with_labs
 
 
@@ -1627,6 +1627,84 @@ def main():
     """, unsafe_allow_html=True)
     
     st.title("🏢 Dashboard de Gestão Comercial - ToxRepresentatives")
+
+    # Login corporativo (Azure AD) simples via MSAL (confidencial):
+    # Se configurado, exige autenticação antes de acessar o dashboard.
+    if AZURE_REQUIRE_LOGIN and AZURE_TENANT_ID and AZURE_CLIENT_ID and AZURE_CLIENT_SECRET and AZURE_REDIRECT_URI:
+        try:
+            import msal
+            from urllib.parse import urlencode
+            # Estado de sessão
+            if 'auth' not in st.session_state:
+                st.session_state.auth = {'account': None, 'token': None}
+
+            authority = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}"
+            scopes = ["User.Read"]
+            app_confidential = msal.ConfidentialClientApplication(
+                client_id=AZURE_CLIENT_ID,
+                client_credential=AZURE_CLIENT_SECRET,
+                authority=authority,
+            )
+
+            # Receber código de auth na query (Streamlit)
+            try:
+                # Streamlit >=1.29
+                query_params = st.query_params.to_dict()
+                code = query_params.get('code')
+            except Exception:
+                # Compatível com versões anteriores
+                qp = st.experimental_get_query_params()
+                code = qp.get('code', [None])[0]
+            if not code:
+                # Exibir botão de login se não autenticado
+                if not st.session_state.auth['token']:
+                    login_url = app_confidential.get_authorization_request_url(
+                        scopes=scopes,
+                        redirect_uri=AZURE_REDIRECT_URI,
+                        prompt='select_account'
+                    )
+                    st.info("Para acessar, faça login com sua conta corporativa Microsoft.")
+                    st.link_button("Entrar com Microsoft", login_url, type="primary")
+                    st.stop()
+            else:
+                # Trocar código por token
+                result = app_confidential.acquire_token_by_authorization_code(
+                    code=code,
+                    scopes=scopes,
+                    redirect_uri=AZURE_REDIRECT_URI
+                )
+                if 'access_token' in result:
+                    st.session_state.auth['token'] = result['access_token']
+                    st.session_state.auth['account'] = result.get('id_token_claims', {})
+                    # Limpar parâmetro ?code da URL (cosmético)
+                    try:
+                        st.experimental_set_query_params()
+                    except Exception:
+                        pass
+                else:
+                    st.error("Falha na autenticação Microsoft.")
+                    st.stop()
+
+            # Mostrar usuário logado
+            user_info = st.session_state.auth.get('account') or {}
+            display_name = user_info.get('name', user_info.get('preferred_username', 'Usuário'))
+            col_a, col_b = st.sidebar.columns([3,1])
+            with col_a:
+                st.success(f"Conectado: {display_name}")
+            with col_b:
+                if st.button("Sair", key="logout"):
+                    st.session_state.pop('auth', None)
+                    try:
+                        st.experimental_set_query_params()
+                    except Exception:
+                        pass
+                    st.rerun()
+        except Exception as _e:
+            # Se MSAL não estiver configurado corretamente, seguir sem bloquear
+            st.warning("Autenticação Microsoft não configurada corretamente. Prosseguindo sem login.")
+    elif AZURE_REQUIRE_LOGIN:
+        st.warning("Login Microsoft habilitado, mas credenciais ausentes. Configure AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET e AZURE_REDIRECT_URI em secrets.")
+        st.stop()
 
     current_date = get_current_datetime()
 

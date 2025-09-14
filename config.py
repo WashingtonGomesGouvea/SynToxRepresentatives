@@ -32,6 +32,14 @@ DEFAULT_YEAR: int = int(_get_config_value("DEFAULT_YEAR", "2025"))
 DEFAULT_ACTIVITY_WINDOW_DAYS: int = int(_get_config_value("DEFAULT_ACTIVITY_WINDOW_DAYS", "15"))
 
 
+# Azure AD (login corporativo)
+AZURE_TENANT_ID: str = _get_config_value("AZURE_TENANT_ID", "")
+AZURE_CLIENT_ID: str = _get_config_value("AZURE_CLIENT_ID", "")
+AZURE_CLIENT_SECRET: str = _get_config_value("AZURE_CLIENT_SECRET", "")
+AZURE_REDIRECT_URI: str = _get_config_value("AZURE_REDIRECT_URI", "")
+AZURE_REQUIRE_LOGIN: bool = _get_config_value("AZURE_REQUIRE_LOGIN", "true").lower() in ["1", "true", "yes"]
+
+
 def get_current_datetime() -> datetime:
     return datetime.now()
 

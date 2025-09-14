@@ -1633,7 +1633,7 @@ def main():
     if AZURE_REQUIRE_LOGIN and AZURE_TENANT_ID and AZURE_CLIENT_ID and AZURE_CLIENT_SECRET and AZURE_REDIRECT_URI:
         try:
             import msal
-            from urllib.parse import unquote
+            from urllib.parse import unquote, quote
             # Estado de sessão
             if 'auth' not in st.session_state:
                 st.session_state.auth = {'account': None, 'token': None}
@@ -1697,12 +1697,15 @@ def main():
                 st.success(f"Conectado: {display_name}")
             with col_b:
                 if st.button("Sair", key="logout"):
+                    # Limpar sessão local e redirecionar para o logout do Azure (encerra sessão no IdP)
                     st.session_state.pop('auth', None)
                     try:
                         st.experimental_set_query_params()
                     except Exception:
                         pass
-                    st.rerun()
+                    logout_url = f"https://login.microsoftonline.com/{AZURE_TENANT_ID}/oauth2/v2.0/logout?post_logout_redirect_uri={quote(AZURE_REDIRECT_URI, safe='') }"
+                    st.markdown(f"<meta http-equiv='refresh' content='0; url={logout_url}' />", unsafe_allow_html=True)
+                    st.stop()
         except Exception as _e:
             # Se MSAL não estiver configurado corretamente, seguir sem bloquear
             st.warning("Autenticação Microsoft não configurada corretamente. Prosseguindo sem login.")

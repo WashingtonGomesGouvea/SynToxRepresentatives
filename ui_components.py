@@ -88,25 +88,43 @@ def line_chart_monthly(monthly: pd.DataFrame):
         # Dados para Internos
         interno_data = monthly[monthly['Categoria'] == 'Interno']
         if not interno_data.empty:
+            text_labels = []
+            for idx, row in interno_data.iterrows():
+                label = f"Volume: {row['Volume']}"
+                if 'labs_ativos' in row:
+                    label += f"<br>Ativos: {row['labs_ativos']}"
+                text_labels.append(label)
             fig.add_trace(go.Scatter(
                 x=interno_data['month'],
                 y=interno_data['Volume'],
-                mode='lines+markers',
+                mode='lines+markers+text',
                 name='Representantes Internos',
                 line=dict(color='#1f77b4', width=3),
-                marker=dict(size=8)
+                marker=dict(size=8),
+                text=text_labels,
+                textposition='top center',
+                textfont=dict(size=10)
             ))
         
         # Dados para Externos
         externo_data = monthly[monthly['Categoria'] == 'Externo']
         if not externo_data.empty:
+            text_labels = []
+            for idx, row in externo_data.iterrows():
+                label = f"Volume: {row['Volume']}"
+                if 'labs_ativos' in row:
+                    label += f"<br>Ativos: {row['labs_ativos']}"
+                text_labels.append(label)
             fig.add_trace(go.Scatter(
                 x=externo_data['month'],
                 y=externo_data['Volume'],
-                mode='lines+markers',
+                mode='lines+markers+text',
                 name='Representantes Externos',
                 line=dict(color='#ff7f0e', width=3),
-                marker=dict(size=8)
+                marker=dict(size=8),
+                text=text_labels,
+                textposition='top center',
+                textfont=dict(size=10)
             ))
         
         # Adicionar linha do TOTAL (soma de Internos + Externos)
@@ -120,13 +138,25 @@ def line_chart_monthly(monthly: pd.DataFrame):
             )
             total_data['Volume_total'] = total_data['Volume_interno'] + total_data['Volume_externo']
             
+            text_labels = []
+            for idx, row in total_data.iterrows():
+                label = f"Volume: {row['Volume_total']}"
+                if 'labs_ativos' in row:
+                    # Somar labs_ativos de interno e externo se disponível
+                    labs_total = row.get('labs_ativos_interno', 0) + row.get('labs_ativos_externo', 0)
+                    label += f"<br>Ativos: {labs_total}"
+                text_labels.append(label)
+            
             fig.add_trace(go.Scatter(
                 x=total_data['month'],
                 y=total_data['Volume_total'],
-                mode='lines+markers',
+                mode='lines+markers+text',
                 name='TOTAL (Internos + Externos)',
                 line=dict(color='#2ca02c', width=4, dash='dash'),
-                marker=dict(size=10, symbol='diamond')
+                marker=dict(size=10, symbol='diamond'),
+                text=text_labels,
+                textposition='top center',
+                textfont=dict(size=10)
             ))
         
         fig.update_layout(
@@ -152,9 +182,20 @@ def line_chart_monthly(monthly: pd.DataFrame):
         
     else:
         # Fallback para dados sem categoria
+        text_labels = []
+        for idx, row in monthly.iterrows():
+            label = f"Volume: {row['Volume']}"
+            if 'labs_ativos' in row:
+                label += f"<br>Ativos: {row['labs_ativos']}"
+            text_labels.append(label)
+        
         fig = px.line(monthly, x="month", y="Volume", markers=True, title="Volume por Mês")
         fig.update_layout(xaxis_title="Mês", yaxis_title="Quantidade de Coletas")
         fig.update_traces(
+            mode='lines+markers+text',
+            text=text_labels,
+            textposition='top center',
+            textfont=dict(size=10),
             hovertemplate="<b>Volume Mensal</b><br>" +
                          "Mês: %{x}<br>" +
                          "Coletas: %{y:,.0f}<extra></extra>"

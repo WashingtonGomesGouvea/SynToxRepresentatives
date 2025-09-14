@@ -5,12 +5,13 @@ import re
 import pandas as pd
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from typing import Tuple
+from typing import Tuple, Optional
 
 import ast
 import json
 
 from config import DATA_DIR, EXCLUDED_LAB_ID
+from sp_connector import SPConnector
 
 
 def _ensure_columns(df: pd.DataFrame, columns_with_defaults: dict) -> pd.DataFrame:
@@ -34,14 +35,77 @@ def _normalize_cnpj(cnpj: str | None) -> str:
     return cnpj_clean.zfill(14)
 
 
+def _maybe_create_sp_connector() -> Optional[SPConnector]:
+    """Cria conector SharePoint se as credenciais estiverem disponíveis"""
+    try:
+        import streamlit as st
+        tenant = st.secrets.get("SHAREPOINT_TENANT_ID")
+        client_id = st.secrets.get("SHAREPOINT_CLIENT_ID")
+        secret = st.secrets.get("SHAREPOINT_CLIENT_SECRET")
+        hostname = st.secrets.get("SHAREPOINT_HOSTNAME")
+        site_path = st.secrets.get("SHAREPOINT_SITE_PATH")
+        library_name = st.secrets.get("SHAREPOINT_LIBRARY_NAME")
+    except Exception:
+        tenant = os.getenv("SHAREPOINT_TENANT_ID")
+        client_id = os.getenv("SHAREPOINT_CLIENT_ID")
+        secret = os.getenv("SHAREPOINT_CLIENT_SECRET")
+        hostname = os.getenv("SHAREPOINT_HOSTNAME")
+        site_path = os.getenv("SHAREPOINT_SITE_PATH")
+        library_name = os.getenv("SHAREPOINT_LIBRARY_NAME")
+    
+    if not all([tenant, client_id, secret, hostname, site_path, library_name]):
+        return None
+    try:
+        return SPConnector(
+            tenant_id=tenant,
+            client_id=client_id,
+            client_secret=secret,
+            hostname=hostname,
+            site_path=site_path,
+            library_name=library_name,
+        )
+    except Exception:
+        return None
+
+
 def load_csvs() -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """
+    Carrega CSVs com fallback inteligente:
+      1) Tenta no DATA_DIR atual (pasta local)
+      2) Se não existir, tenta SharePoint via Graph (se credenciais presentes)
+    """
     reps_path = os.path.join(DATA_DIR, "representatives.csv")
     labs_path = os.path.join(DATA_DIR, "laboratories.csv")
     gath_path = os.path.join(DATA_DIR, "gatherings.csv")
 
-    df_reps = pd.read_csv(reps_path, low_memory=False)
-    df_labs = pd.read_csv(labs_path, low_memory=False)
-    df_gatherings = pd.read_csv(gath_path, low_memory=False)
+    # Verificar se arquivos existem localmente
+    local_files_exist = all(os.path.isfile(p) for p in [reps_path, labs_path, gath_path])
+    
+    if local_files_exist:
+        # Ler arquivos locais
+        df_reps = pd.read_csv(reps_path, low_memory=False)
+        df_labs = pd.read_csv(labs_path, low_memory=False)
+        df_gatherings = pd.read_csv(gath_path, low_memory=False)
+        return df_reps, df_labs, df_gatherings
+    
+    # Tentar SharePoint se arquivos locais não existirem
+    sp = _maybe_create_sp_connector()
+    if sp is not None:
+        try:
+            # Usar valor padrão para SP_BASE_PATH
+            sp_base = "Data Analysis/ToxRepresentatives"
+            df_reps = sp.read_csv(f"{sp_base}/representatives.csv")
+            df_labs = sp.read_csv(f"{sp_base}/laboratories.csv")
+            df_gatherings = sp.read_csv(f"{sp_base}/gatherings.csv")
+            return df_reps, df_labs, df_gatherings
+        except Exception as e:
+            print(f"Erro ao ler do SharePoint: {e}")
+    
+    # Se chegou aqui, nenhum caminho funcionou
+    raise FileNotFoundError(
+        f"Arquivos CSV não encontrados em {DATA_DIR} nem no SharePoint. "
+        "Execute: python sync_data.py --from-year 2025 --upload"
+    )
 
     # Conversão de datas considerando timezone do banco (UTC-3)
     # Estratégia: interpretar timestamps como UTC e converter para America/Sao_Paulo

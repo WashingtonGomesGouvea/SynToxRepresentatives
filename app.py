@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import streamlit as st
 import pandas as pd
+import os
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
 from typing import Dict, List, Tuple
 
-from config import get_current_datetime, DEFAULT_YEAR, DEFAULT_ACTIVITY_WINDOW_DAYS
+from config import get_current_datetime, DEFAULT_YEAR, DEFAULT_ACTIVITY_WINDOW_DAYS, DATA_DIR
 from data_loader import load_csvs, enrich_labs_with_reps, merge_gatherings_with_labs
 
 
@@ -1188,7 +1189,7 @@ def generate_complete_excel(rep_name: str, accred_metrics: dict, status_metrics:
     return filename
 
 
-def rep_individual_dashboard(rep_name: str, df_labs_status: pd.DataFrame, df_gatherings_active: pd.DataFrame, activity_window: int):
+def rep_individual_dashboard(rep_name: str, df_labs_status: pd.DataFrame, df_gatherings_active: pd.DataFrame, activity_window: int, target_month: str | None = None):
     """
     Dashboard individual por representante.
     """
@@ -1360,13 +1361,17 @@ def rep_individual_dashboard(rep_name: str, df_labs_status: pd.DataFrame, df_gat
     
     # Quedas em labs
     st.subheader("⚠️ Laboratórios com Quedas Bruscas")
-    # Seleção de mês (padrão: mês atual)
-    if not df_gatherings_active.empty and _is_datetime_column(df_gatherings_active, 'createdAt'):
-        available_months = sorted(df_gatherings_active['createdAt'].dt.to_period('M').astype(str).unique())
+    # Seleção de mês: usar mês global, se disponível; caso contrário, permitir escolha local
+    if target_month:
+        st.caption(f"Filtro de mês aplicado globalmente: {target_month}")
+        selected_month = target_month
     else:
-        available_months = []
-    default_index = len(available_months) - 1 if available_months else 0
-    selected_month = st.selectbox("Mês", options=available_months, index=default_index) if available_months else None
+        if not df_gatherings_active.empty and _is_datetime_column(df_gatherings_active, 'createdAt'):
+            available_months = sorted(df_gatherings_active['createdAt'].dt.to_period('M').astype(str).unique())
+        else:
+            available_months = []
+        default_index = len(available_months) - 1 if available_months else 0
+        selected_month = st.selectbox("Mês", options=available_months, index=default_index) if available_months else None
     original_drops = detect_lab_drops(df_gatherings_active, rep_name, target_month=selected_month)
     if not original_drops.empty and 'variation' in original_drops.columns:
         # Garantir mes como string para evitar problemas em exportacoes
@@ -1625,10 +1630,39 @@ def main():
 
     current_date = get_current_datetime()
 
-    # Dados
-    df_reps, df_labs, df_gatherings = load_data()
-    
-    df_gatherings_merged = df_gatherings.copy()
+    # Dados + loader
+    with st.spinner("Carregando e processando dados..."):
+        df_reps, df_labs, df_gatherings = load_data()
+        # Garantir createdAt como datetime para todos os fluxos (evita bug em "Todos os meses")
+        try:
+            if "createdAt" in df_gatherings.columns and not pd.api.types.is_datetime64_any_dtype(df_gatherings["createdAt"]):
+                df_gatherings["createdAt"] = pd.to_datetime(df_gatherings["createdAt"], errors="coerce")
+        except Exception:
+            pass
+        # Cópia para análises que precisam de histórico completo
+        df_gatherings_merged = df_gatherings.copy()
+
+    # Última atualização: usar data de modificação dos CSVs (sync_data.py). Fallback: maior createdAt.
+    last_update_str = "-"
+    try:
+        csv_paths = [
+            os.path.join(DATA_DIR, "representatives.csv"),
+            os.path.join(DATA_DIR, "laboratories.csv"),
+            os.path.join(DATA_DIR, "gatherings.csv"),
+        ]
+        mtimes = [os.path.getmtime(p) for p in csv_paths if os.path.isfile(p)]
+        if mtimes:
+            last_dt = datetime.fromtimestamp(max(mtimes))
+            last_update_str = last_dt.strftime("%d/%m/%Y %H:%M")
+        else:
+            # Fallback: maior createdAt das coletas carregadas
+            if "createdAt" in df_gatherings.columns:
+                _dt = pd.to_datetime(df_gatherings["createdAt"], errors="coerce")
+                _mx = _dt.max()
+                if pd.notna(_mx):
+                    last_update_str = _mx.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        pass
 
     # Sidebar: filtros globais simplificados
     st.sidebar.header("🔍 Filtros Simples")
@@ -1638,6 +1672,17 @@ def main():
     else:
         year_options = [DEFAULT_YEAR]
     year = st.sidebar.selectbox("Ano", options=year_options, index=year_options.index(DEFAULT_YEAR) if DEFAULT_YEAR in year_options else 0)
+
+    # Filtro global de mês (por ano selecionado) + opção "Todos os meses"
+    month_label = "Mês (global)"
+    month_options: list[str] = []
+    try:
+        _series_dt = pd.to_datetime(df_gatherings["createdAt"], errors="coerce") if "createdAt" in df_gatherings.columns else pd.Series(dtype="datetime64[ns]")
+        month_options = sorted(_series_dt[_series_dt.dt.year == year].dt.to_period("M").astype(str).dropna().unique()) if not _series_dt.empty else []
+    except Exception:
+        month_options = []
+    month_choices = ["Todos os meses"] + month_options
+    selected_month_global = st.sidebar.selectbox(month_label, options=month_choices, index=0)
     
     activity_window = st.sidebar.slider("Dias para Atividade", 7, 60, DEFAULT_ACTIVITY_WINDOW_DAYS, help="Define quando um lab é considerado ativo")
     tipo_rep = st.sidebar.selectbox("Tipo de Representante", ["Todos", "Interno", "Externo"])
@@ -1650,6 +1695,9 @@ def main():
         st.session_state.clear()
         st.rerun()
 
+    # Exibir data de última atualização da fonte de dados
+    st.sidebar.caption(f"🕒 Última atualização: {last_update_str}")
+
     # Filtragem
     # Filtrar por ano apenas se createdAt for datetime
     if _is_datetime_column(df_gatherings, "createdAt"):
@@ -1657,6 +1705,14 @@ def main():
     else:
         # Se não for datetime, usar todos os dados
         pass
+    # Filtrar por mês global (se selecionado)
+    target_month = None if selected_month_global == "Todos os meses" else selected_month_global
+    if target_month and "createdAt" in df_gatherings.columns:
+        try:
+            df_gatherings = df_gatherings.copy()
+            df_gatherings = df_gatherings[df_gatherings["createdAt"].dt.to_period("M").astype(str) == target_month]
+        except Exception:
+            pass
     df_gatherings_active = filter_active_gatherings(df_gatherings, exclude_test=False, exclude_disabled=True)
 
     if tipo_rep != "Todos":
@@ -1690,6 +1746,16 @@ def main():
     )
 
     weekly, monthly = aggregate_volumes(df_gatherings_active)
+    # Se um mês específico estiver aplicado globalmente, manter as agregações coerentes
+    if target_month:
+        try:
+            if not weekly.empty and 'week' in weekly.columns:
+                # Filtrar semanas pertencentes ao mesmo mês (pelo prefixo YYYY-MM)
+                weekly = weekly[weekly['week'].astype(str).str.startswith(target_month)]
+            if not monthly.empty and 'month' in monthly.columns:
+                monthly = monthly[monthly['month'].astype(str) == target_month]
+        except Exception:
+            pass
     kpis = compute_kpis(monthly)
 
     # Tabs reorganizadas: priorizar o que o gestor precisa
@@ -1701,134 +1767,61 @@ def main():
 
     with tab_dashboard:
         st.header("📊 Visão Geral Simples")
-        kpi_cards(kpis, credenciados, descredenciados, ativos_coleta, inativos_coleta, activity_window)
-        line_chart_monthly(monthly)
-        line_chart_weekly(weekly)
+        with st.spinner("Carregando visão geral..."):
+            kpi_cards(kpis, credenciados, descredenciados, ativos_coleta, inativos_coleta, activity_window)
+            line_chart_monthly(monthly)
+            line_chart_weekly(weekly)
 
     with tab_variations:
         st.header("📉 Análise de Quedas Mensais")
-        st.info("Aqui você vê facilmente se houve queda entre meses e o quanto caiu.")
-        # Se Tipo de Representante = Todos, condensar dados para evitar duplicações
-        monthly_to_show = monthly
-        if tipo_rep == "Todos" and not monthly.empty:
-            monthly_to_show = monthly.groupby('month', as_index=False)['Volume'].sum()
-        line_chart_with_variations(monthly_to_show)
+        with st.spinner("Carregando análise de quedas..."):
+            st.info("Aqui você vê facilmente se houve queda entre meses e o quanto caiu.")
+            # Se Tipo de Representante = Todos, condensar dados para evitar duplicações
+            monthly_to_show = monthly
+            if tipo_rep == "Todos" and not monthly.empty:
+                monthly_to_show = monthly.groupby('month', as_index=False)['Volume'].sum()
+            line_chart_with_variations(monthly_to_show)
 
     with tab_rep_individual:
         st.header("👤 Análise Individual de Representante")
         st.info("Selecione um representante para ver detalhes simples sobre seus labs, credenciamentos e quedas.")
         
-        rep_options = sorted(df_labs["name_rep"].dropna().unique())
+        rep_options = sorted(df_labs["name_rep"].dropna().unique()) if "name_rep" in df_labs.columns else []
         selected_rep = st.selectbox("Escolha o Representante", options=rep_options)
         
         if selected_rep:
-            rep_individual_dashboard(selected_rep, df_labs_status, df_gatherings_active, activity_window)
+            with st.spinner("Carregando análise do representante..."):
+                try:
+                    rep_individual_dashboard(selected_rep, df_labs_status, df_gatherings_active, activity_window, target_month)
+                except TypeError:
+                    # Compatibilidade com versões antigas da função (sem target_month)
+                    rep_individual_dashboard(selected_rep, df_labs_status, df_gatherings_active, activity_window)
 
     with tab_gestao:
-        rep_metrics = compute_representative_metrics(df_gatherings_active, df_labs_status, current_date, activity_window)
-        category_summary = compute_category_summary(df_gatherings_active, df_labs_status)
-        performance_dashboard(rep_metrics, category_summary)
-        
-        st.subheader("📊 Performance por Representante")
-        representative_table(
-            rep_metrics[['name_rep', 'Categoria', 'labs_credenciados', 'labs_ativos', 'labs_inativos', 'total_coletas', 'taxa_ativacao', 'produtividade']],
-            "Performance"
-        )
-        
-        st.subheader("🆕 Novos Credenciamentos")
-        new_accred = compute_new_accreditations(df_labs_status, current_date, 3)
-        
-        if not new_accred.empty:
-            # Limpar e organizar dados de novos credenciamentos
-            new_accred_clean = new_accred.copy()
+        with st.spinner("Carregando gestão comercial..."):
+            rep_metrics = compute_representative_metrics(df_gatherings_active, df_labs_status, current_date, activity_window)
+            category_summary = compute_category_summary(df_gatherings_active, df_labs_status)
+            performance_dashboard(rep_metrics, category_summary)
             
-            # Selecionar apenas colunas úteis
-            useful_columns = ['fantasyName', 'cnpj', 'name_rep', 'Categoria', 'data_credenciamento', 'dias_credenciado']
-            available_columns = [col for col in useful_columns if col in new_accred_clean.columns]
+            st.subheader("📊 Performance por Representante")
+            representative_table(
+                rep_metrics[['name_rep', 'Categoria', 'labs_credenciados', 'labs_ativos', 'labs_inativos', 'total_coletas', 'taxa_ativacao', 'produtividade']],
+                "Performance"
+            )
             
-            if available_columns:
-                new_accred_clean = new_accred_clean[available_columns]
-                
-                # Renomear colunas
-                column_mapping = {
-                    'fantasyName': 'Nome do Laboratório',
-                    'cnpj': 'CNPJ',
-                    'name_rep': 'Representante',
-                    'Categoria': 'Tipo',
-                    'data_credenciamento': 'Data de Credenciamento',
-                    'dias_credenciado': 'Dias Credenciado'
-                }
-                
-                new_accred_clean = new_accred_clean.rename(columns=column_mapping)
-                
-                # Formatar CNPJ
-                if 'CNPJ' in new_accred_clean.columns:
-                    new_accred_clean['CNPJ'] = new_accred_clean['CNPJ'].apply(lambda x: f"{x[:2]}.{x[2:5]}.{x[5:8]}/{x[8:12]}-{x[12:]}" if pd.notna(x) and len(str(x)) == 14 else str(x))
-                
-                # Ordenar por data de credenciamento (mais recentes primeiro)
-                if 'Data de Credenciamento' in new_accred_clean.columns:
-                    new_accred_clean = new_accred_clean.sort_values('Data de Credenciamento', ascending=False)
-                
-                st.dataframe(new_accred_clean, use_container_width=True)
-        else:
-            st.info("Dados de novos credenciamentos não disponíveis.")
-
-
-    with tab_alertas:
-        st.header("⚠️ Alertas - Laboratórios Inativos")
-        threshold_days = st.slider("Dias para Alerta de Inatividade", 15, 90, 30, help="Define quantos dias sem coleta para considerar um lab inativo")
-        
-        inactive_labs = compute_inactive_labs_alert(df_labs_status, df_gatherings_merged, current_date, threshold_days)
-        
-        if not inactive_labs.empty:
-            # Resumo executivo
-            st.warning(f"🚨 {len(inactive_labs)} laboratórios inativos há mais de {threshold_days} dias!")
+            st.subheader("🆕 Novos Credenciamentos")
+            new_accred = compute_new_accreditations(df_labs_status, current_date, 3)
             
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total de Labs Inativos", len(inactive_labs))
-            with col2:
-                avg_days = inactive_labs['dias_sem_coletar'].mean() if 'dias_sem_coletar' in inactive_labs.columns else 0
-                st.metric("Média de Dias Inativo", f"{avg_days:.0f} dias")
-            with col3:
-                max_days = inactive_labs['dias_sem_coletar'].max() if 'dias_sem_coletar' in inactive_labs.columns else 0
-                st.metric("Mais Tempo Inativo", f"{max_days:.0f} dias")
-            
-            # Agrupar por representante para análise
-            if 'name_rep' in inactive_labs.columns:
-                st.subheader("📋 Análise por Representante")
-                rep_summary = inactive_labs.groupby('name_rep').size().reset_index(name='labs_inativos')
-                rep_summary = rep_summary.sort_values('labs_inativos', ascending=False)
-                
-                col1, col2 = st.columns([2, 1])
-                with col1:
-                    st.dataframe(rep_summary.rename(columns={
-                        'name_rep': 'Representante',
-                        'labs_inativos': 'Labs Inativos'
-                    }), use_container_width=True)
-                
-                with col2:
-                    st.subheader("🎯 Ações Recomendadas")
-                    st.markdown("""
-                    - **Contatar representantes** com mais labs inativos
-                    - **Verificar motivos** da inatividade
-                    - **Planejar visitas** aos labs críticos
-                    - **Revisar estratégia** de relacionamento
-                    """)
-            
-            # Lista detalhada
-            st.subheader("📋 Lista Detalhada de Labs Inativos")
-            
-            if not inactive_labs.empty:
-                # Limpar e organizar dados de labs inativos
-                inactive_labs_clean = inactive_labs.copy()
+            if not new_accred.empty:
+                # Limpar e organizar dados de novos credenciamentos
+                new_accred_clean = new_accred.copy()
                 
                 # Selecionar apenas colunas úteis
-                useful_columns = ['fantasyName', 'cnpj', 'name_rep', 'Categoria', 'ultima_coleta_str', 'dias_sem_coletar_display']
-                available_columns = [col for col in useful_columns if col in inactive_labs_clean.columns]
+                useful_columns = ['fantasyName', 'cnpj', 'name_rep', 'Categoria', 'data_credenciamento', 'dias_credenciado']
+                available_columns = [col for col in useful_columns if col in new_accred_clean.columns]
                 
                 if available_columns:
-                    inactive_labs_clean = inactive_labs_clean[available_columns]
+                    new_accred_clean = new_accred_clean[available_columns]
                     
                     # Renomear colunas
                     column_mapping = {
@@ -1836,86 +1829,171 @@ def main():
                         'cnpj': 'CNPJ',
                         'name_rep': 'Representante',
                         'Categoria': 'Tipo',
-                        'ultima_coleta_str': 'Última Coleta',
-                        'dias_sem_coletar_display': 'Dias sem Coletar'
+                        'data_credenciamento': 'Data de Credenciamento',
+                        'dias_credenciado': 'Dias Credenciado'
                     }
                     
-                    inactive_labs_clean = inactive_labs_clean.rename(columns=column_mapping)
+                    new_accred_clean = new_accred_clean.rename(columns=column_mapping)
                     
                     # Formatar CNPJ
-                    if 'CNPJ' in inactive_labs_clean.columns:
-                        inactive_labs_clean['CNPJ'] = inactive_labs_clean['CNPJ'].apply(lambda x: f"{x[:2]}.{x[2:5]}.{x[5:8]}/{x[8:12]}-{x[12:]}" if pd.notna(x) and len(str(x)) == 14 else str(x))
+                    if 'CNPJ' in new_accred_clean.columns:
+                        new_accred_clean['CNPJ'] = new_accred_clean['CNPJ'].apply(lambda x: f"{x[:2]}.{x[2:5]}.{x[5:8]}/{x[8:12]}-{x[12:]}" if pd.notna(x) and len(str(x)) == 14 else str(x))
                     
-                    # Ordenar por dias sem coletar (mais críticos primeiro)
-                    if 'Dias sem Coletar' in inactive_labs_clean.columns:
-                        inactive_labs_clean = inactive_labs_clean.sort_values('Dias sem Coletar', ascending=False)
+                    # Ordenar por data de credenciamento (mais recentes primeiro)
+                    if 'Data de Credenciamento' in new_accred_clean.columns:
+                        new_accred_clean = new_accred_clean.sort_values('Data de Credenciamento', ascending=False)
                     
-                    st.dataframe(inactive_labs_clean, use_container_width=True)
-                else:
-                    st.info("Dados de labs inativos não disponíveis.")
+                    st.dataframe(new_accred_clean, use_container_width=True)
             else:
-                st.info("Nenhum lab inativo encontrado.")
-        else:
-            st.success(f"✅ Todos os laboratórios estão ativos! (coletaram nos últimos {threshold_days} dias)")
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Status", "✅ Ativo")
-            with col2:
-                st.metric("Labs Ativos", len(df_labs_status))
-            with col3:
-                st.metric("Taxa de Ativação", "100%")
+                st.info("Dados de novos credenciamentos não disponíveis.")
+
+
+    with tab_alertas:
+        with st.spinner("Carregando alertas..."):
+            st.header("⚠️ Alertas - Laboratórios Inativos")
+            threshold_days = st.slider("Dias para Alerta de Inatividade", 15, 90, 30, help="Define quantos dias sem coleta para considerar um lab inativo")
+            
+            inactive_labs = compute_inactive_labs_alert(df_labs_status, df_gatherings_merged, current_date, threshold_days)
+            
+            if not inactive_labs.empty:
+                # Resumo executivo
+                st.warning(f"🚨 {len(inactive_labs)} laboratórios inativos há mais de {threshold_days} dias!")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total de Labs Inativos", len(inactive_labs))
+                with col2:
+                    avg_days = inactive_labs['dias_sem_coletar'].mean() if 'dias_sem_coletar' in inactive_labs.columns else 0
+                    st.metric("Média de Dias Inativo", f"{avg_days:.0f} dias")
+                with col3:
+                    max_days = inactive_labs['dias_sem_coletar'].max() if 'dias_sem_coletar' in inactive_labs.columns else 0
+                    st.metric("Mais Tempo Inativo", f"{max_days:.0f} dias")
+                
+                # Agrupar por representante para análise
+                if 'name_rep' in inactive_labs.columns:
+                    st.subheader("📋 Análise por Representante")
+                    rep_summary = inactive_labs.groupby('name_rep').size().reset_index(name='labs_inativos')
+                    rep_summary = rep_summary.sort_values('labs_inativos', ascending=False)
+                    
+                    col1, col2 = st.columns([2, 1])
+                    with col1:
+                        st.dataframe(rep_summary.rename(columns={
+                            'name_rep': 'Representante',
+                            'labs_inativos': 'Labs Inativos'
+                        }), use_container_width=True)
+                    
+                    with col2:
+                        st.subheader("🎯 Ações Recomendadas")
+                        st.markdown("""
+                        - **Contatar representantes** com mais labs inativos
+                        - **Verificar motivos** da inatividade
+                        - **Planejar visitas** aos labs críticos
+                        - **Revisar estratégia** de relacionamento
+                        """)
+                
+                # Lista detalhada
+                st.subheader("📋 Lista Detalhada de Labs Inativos")
+                
+                if not inactive_labs.empty:
+                    # Limpar e organizar dados de labs inativos
+                    inactive_labs_clean = inactive_labs.copy()
+                    
+                    # Selecionar apenas colunas úteis
+                    useful_columns = ['fantasyName', 'cnpj', 'name_rep', 'Categoria', 'ultima_coleta_str', 'dias_sem_coletar_display']
+                    available_columns = [col for col in useful_columns if col in inactive_labs_clean.columns]
+                    
+                    if available_columns:
+                        inactive_labs_clean = inactive_labs_clean[available_columns]
+                        
+                        # Renomear colunas
+                        column_mapping = {
+                            'fantasyName': 'Nome do Laboratório',
+                            'cnpj': 'CNPJ',
+                            'name_rep': 'Representante',
+                            'Categoria': 'Tipo',
+                            'ultima_coleta_str': 'Última Coleta',
+                            'dias_sem_coletar_display': 'Dias sem Coletar'
+                        }
+                        
+                        inactive_labs_clean = inactive_labs_clean.rename(columns=column_mapping)
+                        
+                        # Formatar CNPJ
+                        if 'CNPJ' in inactive_labs_clean.columns:
+                            inactive_labs_clean['CNPJ'] = inactive_labs_clean['CNPJ'].apply(lambda x: f"{x[:2]}.{x[2:5]}.{x[5:8]}/{x[8:12]}-{x[12:]}" if pd.notna(x) and len(str(x)) == 14 else str(x))
+                        
+                        # Ordenar por dias sem coletar (mais críticos primeiro)
+                        if 'Dias sem Coletar' in inactive_labs_clean.columns:
+                            inactive_labs_clean = inactive_labs_clean.sort_values('Dias sem Coletar', ascending=False)
+                        
+                        st.dataframe(inactive_labs_clean, use_container_width=True)
+                    else:
+                        st.info("Dados de labs inativos não disponíveis.")
+                else:
+                    st.info("Nenhum lab inativo encontrado.")
+            else:
+                st.success(f"✅ Todos os laboratórios estão ativos! (coletaram nos últimos {threshold_days} dias)")
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Status", "✅ Ativo")
+                with col2:
+                    st.metric("Labs Ativos", len(df_labs_status))
+                with col3:
+                    st.metric("Taxa de Ativação", "100%")
 
     # Outras tabs mantidas como antes, mas com fontes maiores implicitamente pelo CSS
 
     with tab_ranking:
-        ranking_reps, ranking_labs = build_rankings(df_gatherings_active, df_labs_cred, last_collection, current_date, activity_window)
-        st.subheader("🏆 Ranking de Representantes")
-        table(ranking_reps, "Ranking Reps")
-        st.subheader("🏆 Ranking de Laboratórios")
-        table(ranking_labs, "Ranking Labs")
+        with st.spinner("Carregando rankings..."):
+            ranking_reps, ranking_labs = build_rankings(df_gatherings_active, df_labs_cred, last_collection, current_date, activity_window)
+            st.subheader("🏆 Ranking de Representantes")
+            table(ranking_reps, "Ranking Reps")
+            st.subheader("🏆 Ranking de Laboratórios")
+            table(ranking_labs, "Ranking Labs")
 
     
 
     with tab_geografia:
-        state_metrics = compute_geographic_metrics(df_gatherings_active, df_labs_status, current_date, activity_window)
-        city_metrics = compute_city_metrics(df_gatherings_active, df_labs_status, current_date, activity_window)
-        geographic_dashboard(state_metrics, city_metrics)
+        with st.spinner("Carregando análise geográfica..."):
+            state_metrics = compute_geographic_metrics(df_gatherings_active, df_labs_status, current_date, activity_window)
+            city_metrics = compute_city_metrics(df_gatherings_active, df_labs_status, current_date, activity_window)
+            geographic_dashboard(state_metrics, city_metrics)
 
     with tab_labs:
-        st.header("🏥 Gestão de Laboratórios")
-        if not df_labs_cred.empty:
-            labs_clean = df_labs_cred.copy()
-            useful_columns = ['fantasyName', 'cnpj', 'name_rep', 'Categoria', 'ativo_coleta', 'ultima_coleta_str', 'days_since_last_display']
-            available_columns = [col for col in useful_columns if col in labs_clean.columns]
-            if available_columns:
-                labs_clean = labs_clean[available_columns]
-                column_mapping = {
-                    'fantasyName': 'Nome do Laboratório',
-                    'cnpj': 'CNPJ',
-                    'name_rep': 'Representante',
-                    'Categoria': 'Tipo',
-                    'ativo_coleta': 'Ativo em Coletas',
-                    'ultima_coleta_str': 'Última Coleta',
-                    'days_since_last_display': 'Dias sem Coletar'
-                }
-                labs_clean = labs_clean.rename(columns=column_mapping)
-                if 'CNPJ' in labs_clean.columns:
-                    labs_clean['CNPJ'] = labs_clean['CNPJ'].apply(lambda x: f"{x[:2]}.{x[2:5]}.{x[5:8]}/{x[8:12]}-{x[12:]}" if pd.notna(x) and len(str(x)) == 14 else str(x))
-                labs_clean = labs_clean.sort_values('Nome do Laboratório')
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("Total de Labs", len(labs_clean))
-                with col2:
-                    ativos = len(labs_clean[labs_clean['Ativo em Coletas'] == True]) if 'Ativo em Coletas' in labs_clean.columns else 0
-                    st.metric("Labs Ativos", ativos)
-                with col3:
-                    inativos = len(labs_clean[labs_clean['Ativo em Coletas'] == False]) if 'Ativo em Coletas' in labs_clean.columns else 0
-                    st.metric("Labs Inativos", inativos)
-                st.dataframe(labs_clean, use_container_width=True)
+        with st.spinner("Carregando gestão de laboratórios..."):
+            st.header("🏥 Gestão de Laboratórios")
+            if not df_labs_cred.empty:
+                labs_clean = df_labs_cred.copy()
+                useful_columns = ['fantasyName', 'cnpj', 'name_rep', 'Categoria', 'ativo_coleta', 'ultima_coleta_str', 'days_since_last_display']
+                available_columns = [col for col in useful_columns if col in labs_clean.columns]
+                if available_columns:
+                    labs_clean = labs_clean[available_columns]
+                    column_mapping = {
+                        'fantasyName': 'Nome do Laboratório',
+                        'cnpj': 'CNPJ',
+                        'name_rep': 'Representante',
+                        'Categoria': 'Tipo',
+                        'ativo_coleta': 'Ativo em Coletas',
+                        'ultima_coleta_str': 'Última Coleta',
+                        'days_since_last_display': 'Dias sem Coletar'
+                    }
+                    labs_clean = labs_clean.rename(columns=column_mapping)
+                    if 'CNPJ' in labs_clean.columns:
+                        labs_clean['CNPJ'] = labs_clean['CNPJ'].apply(lambda x: f"{x[:2]}.{x[2:5]}.{x[5:8]}/{x[8:12]}-{x[12:]}" if pd.notna(x) and len(str(x)) == 14 else str(x))
+                    labs_clean = labs_clean.sort_values('Nome do Laboratório')
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total de Labs", len(labs_clean))
+                    with col2:
+                        ativos = len(labs_clean[labs_clean['Ativo em Coletas'] == True]) if 'Ativo em Coletas' in labs_clean.columns else 0
+                        st.metric("Labs Ativos", ativos)
+                    with col3:
+                        inativos = len(labs_clean[labs_clean['Ativo em Coletas'] == False]) if 'Ativo em Coletas' in labs_clean.columns else 0
+                        st.metric("Labs Inativos", inativos)
+                    st.dataframe(labs_clean, use_container_width=True)
+                else:
+                    st.info("Dados de laboratórios não disponíveis.")
             else:
-                st.info("Dados de laboratórios não disponíveis.")
-        else:
-            st.info("Nenhum laboratório encontrado.")
+                st.info("Nenhum laboratório encontrado.")
 
 
 if __name__ == "__main__":

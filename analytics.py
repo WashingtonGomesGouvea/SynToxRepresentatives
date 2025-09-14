@@ -52,8 +52,15 @@ def compute_coleta_status(
     if df_gatherings_active.empty:
         last_collection = pd.DataFrame(columns=["_laboratory", "createdAt"])  # vazio
     else:
+        # Garantir que createdAt seja datetime antes de calcular o máximo
+        df_gatherings_clean = df_gatherings_active.copy()
+        if "createdAt" in df_gatherings_clean.columns:
+            df_gatherings_clean["createdAt"] = pd.to_datetime(df_gatherings_clean["createdAt"], errors="coerce")
+            # Remover linhas onde a conversão falhou (valores inválidos)
+            df_gatherings_clean = df_gatherings_clean.dropna(subset=["createdAt"])
+        
         # Calcular última coleta por laboratório
-        last_collection = df_gatherings_active.groupby("_laboratory")["createdAt"].max().reset_index()
+        last_collection = df_gatherings_clean.groupby("_laboratory")["createdAt"].max().reset_index()
         
         # Merge com labs (usar suffixes para evitar conflito)
         labs = labs.merge(
@@ -314,6 +321,14 @@ def compute_inactive_labs_alert(
     else:
         # Filtrar apenas coletas ativas (não test, não disabled)
         df_gatherings_active_all_years = filter_active_gatherings(df_gatherings_merged, exclude_test=False, exclude_disabled=True)
+        
+        # Garantir que createdAt seja datetime antes de calcular o máximo
+        if "createdAt" in df_gatherings_active_all_years.columns:
+            df_gatherings_active_all_years = df_gatherings_active_all_years.copy()
+            df_gatherings_active_all_years["createdAt"] = pd.to_datetime(df_gatherings_active_all_years["createdAt"], errors="coerce")
+            # Remover linhas onde a conversão falhou (valores inválidos)
+            df_gatherings_active_all_years = df_gatherings_active_all_years.dropna(subset=["createdAt"])
+        
         last_collections = df_gatherings_active_all_years.groupby('_laboratory')['createdAt'].max().reset_index()
     
     # Merge com labs credenciados (usar suffixes para evitar conflito)
